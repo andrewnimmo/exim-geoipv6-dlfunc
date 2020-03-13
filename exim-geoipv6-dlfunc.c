@@ -16,6 +16,9 @@
  * You should have received a copy of the GNU Lesser General Public License
  * along with this library; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ *
+ * Additional code and updates by Andrew David Nimmo <andrew@nimmo.dev>
+ *
  */
 
 #ifdef HAVE_CONFIG_H
@@ -28,19 +31,19 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-/* MaxMind GeoIP C API header: */
-#include "GeoIP.h"
+/* MaxMind maxminddb C API header: */
+#include "maxminddb.h"
 
 /* Exim4 dlfunc API header: */
+#define LOCAL_SCAN 1
 #include "local_scan.h"
 
 /*****************************************************************************
  * Configuration settings:
  *****************************************************************************/
 
-/* GeoIP database edition selection: */
-#define EDITION_V4	GEOIP_COUNTRY_EDITION
-#define EDITION_V6	GEOIP_COUNTRY_EDITION_V6
+/* GeoIP2 database */
+#define MAXMINDDB_PATH US"/usr/share/GeoIP/GeoLite2-Country.mmdb"
 
 /* default code returned when country is unknown: */
 #define COUNTRY_CODE_UNKNOWN		US"--"
@@ -55,60 +58,103 @@
 int
 geoip_country_code(uschar **yield, int argc, uschar *argv[])
 {
-	GeoIP *gi;
-	const char *res;
-	union {
-		struct in_addr buf4;
-		struct in6_addr buf6;
-	} buf;
+  if (argc != 1) {
+    *yield = string_copy(US"Invalid number of arguments");
 
-	if (argc != 1) {
-		*yield = string_copy(US"Invalid number of arguments");
-                return ERROR;
-        }
+    return ERROR;
+  }
 
-	if (inet_pton(AF_INET, (char *) argv[0], &buf) == 1) {
-		/* IPv4 address: */
+  /* sugar */
+  char *ip_address = argv[0];
 
-		gi = GeoIP_open_type(EDITION_V4, GEOIP_STANDARD);
+  MMDB_s mmdb;
+  int status =
+    MMDB_open(MAXMINDDB_PATH, MMDB_MODE_MMAP, &mmdb);
 
-		if (gi == NULL) {
-			log_write(0, LOG_MAIN, US"geoipv6: Failed to open"
-				 " IPv4 GeoIP database");
-			*yield = string_copy(COUNTRY_CODE_LOOKUP_FAILED);
-			return OK;
-		}
+  if (MMDB_SUCCESS != status) {
+    log_write(0, LOG_MAIN, US"geoipv6: Failed to open GeoIP2 database");
+    *yield = string_copy(COUNTRY_CODE_LOOKUP_FAILED);
 
-		res = GeoIP_country_code_by_addr(gi, (char *) argv[0]);
+    return OK;
+  }
 
-	} else if (inet_pton(AF_INET6, (char *) argv[0], &buf) == 1) {
-		/* IPv6 address: */
+	
+  int gai_error, mmdb_error;
+  MMDB_lookup_result_s result =
+    MMDB_lookup_string(&mmdb, ip_address , &gai_error, &mmdb_error);
+	
+  if (0 != gai_error) {
+    log_write(0, LOG_MAIN, US"geoipv6: Error from getaddrinfo ");
+    *yield = string_copy(COUNTRY_CODE_LOOKUP_FAILED);
 
-		gi = GeoIP_open_type(EDITION_V6, GEOIP_STANDARD);
+    /* fprintf(stderr, */
+    /* 	  "\n  Error from getaddrinfo for %s - %s\n\n", */
+    /* 	  ip_address, gai_strerror(gai_error)); */
+    /* exit(2); */
 
-		if (gi == NULL) {
-			log_write(0, LOG_MAIN, US"geoipv6: Failed to open"
-				 " IPv6 GeoIP database");
-			*yield = string_copy(COUNTRY_CODE_LOOKUP_FAILED);
-			return OK;
-		}
+    goto end;
+  }
+	
+  if (MMDB_SUCCESS != mmdb_error) {
+    log_write(0, LOG_MAIN, US"geoipv6: Error from libmaxminddb ");
+    *yield = string_copy(COUNTRY_CODE_LOOKUP_FAILED);
 
-		res = GeoIP_country_code_by_addr_v6(gi, (char *) argv[0]);
+    /* fprintf(stderr, */
+    /* 	  "\n  Got an error from libmaxminddb: %s\n\n", */
+    /* 	  MMDB_strerror(mmdb_error)); */
+    /* exit(3); */
 
-	} else {
-		/* Unrecognized address format: */
+    goto end;
+  }
 
-		*yield = string_copy(US"Unrecognized address format");
-		return FAIL;
-	}
-	GeoIP_delete(gi);
+  MMDB_entry_data_s entry_data;
+	
+  int exit_code = 0;
+  if (result.found_entry) {
+    int status =
+      MMDB_get_value(&result.entry, &entry_data, "country", "iso_code", NULL);
+	  
+    if (MMDB_SUCCESS != status) {
+      log_write(0, LOG_MAIN, US"geoipv6: Error looking up the entry data ");
+      *yield = string_copy(COUNTRY_CODE_LOOKUP_FAILED);
 
-	if (res == NULL)
-		*yield = string_copy(COUNTRY_CODE_UNKNOWN);
-	else
-		*yield = string_copy((uschar *) res);
+      /* fprintf( */
+      /* 	    stderr, */
+      /* 	    "Got an error looking up the entry data - %s\n", */
+      /* 	    MMDB_strerror(status)); */
+      /* exit_code = 4; */
 
-	return OK;
+      goto end;
+    }
+	  
+    if (NULL != &entry_data) {
+      if (MMDB_DATA_TYPE_UTF8_STRING == entry_data.type) {
+	*yield = string_copyn((uschar *) entry_data.utf8_string, entry_data.data_size);
+      } else {
+	log_write(0, LOG_MAIN, US"geoipv6: Error unexpected data type ");
+	*yield = string_copy(COUNTRY_CODE_LOOKUP_FAILED);
+      }
+
+      goto end;
+    }
+	  
+  } else {
+    log_write(0, LOG_MAIN, US"geoipv6: No data for the IP address ");
+    *yield = string_copy(COUNTRY_CODE_LOOKUP_FAILED);
+
+    /* fprintf( */
+    /* 	  stderr, */
+    /* 	  "\n  No entry for this IP address (%s) was found\n\n", */
+    /* 	  ip_address); */
+    /* exit_code = 5; */
+	  
+    goto end;
+  }
+    
+ end:
+  MMDB_close(&mmdb);
+  return OK;
+	
 }
 
 /*****************************************************************************

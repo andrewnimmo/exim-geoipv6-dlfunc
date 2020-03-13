@@ -1,3 +1,24 @@
+MaxMind GeoIP2 dlfunc for Exim
+==============================
+
+This is a GeoiP2 dlfunc library for Exim, based on the GeoIP dlfunc
+documented below, and updated to use the MaxMind GeoIP2 library and
+databases. No attempt has been made, for now, to adapt or augment the
+original functionality, to allow this to be used to directly replace the
+original dlfunc. The original documentation is retained below.
+
+On Debian/Ubuntu systems, the libmaxminddb-dev and libmaxminddb0
+packages are required. The MaxMind GeoIP2 databases can be downloaded
+from https://dev.maxmind.com/geoip/geoip2/downloadable/ and in
+particular the free databases
+https://dev.maxmind.com/geoip/geoip2/geolite2/ which require
+registration for download access.
+
+- Github: https://github.com/andrewnimmo/exim-geoipv6-dlfunc
+- Author: Andrew David Nimmo, andrew at nimmo.dev
+- License: LGPL version 2.1 or later (unchanged)
+
+
 MaxMind GeoIP dlfunc for Exim
 =============================
 
