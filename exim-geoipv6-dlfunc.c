@@ -25,12 +25,6 @@
 #include "config.h"
 #endif
 
-/* Headers for inet_pton(3): */
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-
 /* MaxMind maxminddb C API header: */
 #include "maxminddb.h"
 
@@ -42,14 +36,23 @@
  * Configuration settings:
  *****************************************************************************/
 
-/* GeoIP2 database */
-#define MAXMINDDB_PATH US"/usr/share/GeoIP/GeoLite2-Country.mmdb"
+/* GeoIP2 Country database */
+#define MAXMINDDB_COUNTRY_PATH US"/usr/share/GeoIP/GeoLite2-Country.mmdb"
+
+/* GeoIP2 ASN database */
+#define MAXMINDDB_ASN_PATH US"/usr/share/GeoIP/GeoLite2-ASN.mmdb"
 
 /* default code returned when country is unknown: */
-#define COUNTRY_CODE_UNKNOWN		US"--"
+#define COUNTRY_CODE_UNKNOWN US"--"
 
 /* default code returned on lookup failures due to missing database: */
-#define COUNTRY_CODE_LOOKUP_FAILED	US"--"
+#define COUNTRY_CODE_LOOKUP_FAILED US"--"
+
+/* default code returned when ASN is unknown: */
+#define ASN_UNKNOWN US"-"
+
+/* default code returned on lookup failures due to missing database: */
+#define ASN_LOOKUP_FAILED US"-"
 
 /*****************************************************************************
  * Country code lookup function:
@@ -69,7 +72,7 @@ geoip_country_code(uschar **yield, int argc, uschar *argv[])
 
   MMDB_s mmdb;
   int status =
-    MMDB_open(MAXMINDDB_PATH, MMDB_MODE_MMAP, &mmdb);
+    MMDB_open(MAXMINDDB_COUNTRY_PATH, MMDB_MODE_MMAP, &mmdb);
 
   if (MMDB_SUCCESS != status) {
     log_write(0, LOG_MAIN, US"geoipv6: Failed to open GeoIP2 database");
@@ -156,6 +159,87 @@ geoip_country_code(uschar **yield, int argc, uschar *argv[])
   return OK;
 	
 }
+
+/* Retrieve ASN from IP Address */
+int
+geoip_asn(uschar **yield, int argc, uschar *argv[])
+{
+
+  if (argc != 1) {
+    *yield = string_copy(US"Invalid number of arguments");
+
+    return ERROR;
+  }
+
+  /* Sugar */
+  char *ip_address = argv[0];
+
+  MMDB_s mmdb;
+  int status =
+    MMDB_open(MAXMINDDB_ASN_PATH, MMDB_MODE_MMAP, &mmdb);
+
+  if (MMDB_SUCCESS != status) {
+    log_write(0, LOG_MAIN, US"geoipv6: Failed to open GeoIP2 database");
+    *yield = string_copy(ASN_LOOKUP_FAILED);
+
+    return OK;
+  }
+
+  int gai_error, mmdb_error;
+  MMDB_lookup_result_s result =
+    MMDB_lookup_string(&mmdb, ip_address , &gai_error, &mmdb_error);
+	
+  if (0 != gai_error) {
+    log_write(0, LOG_MAIN, US"geoipv6: Error from getaddrinfo ");
+    *yield = string_copy(ASN_LOOKUP_FAILED);
+
+    goto end_asn;
+  }
+	
+  if (MMDB_SUCCESS != mmdb_error) {
+    log_write(0, LOG_MAIN, US"geoipv6: Error from libmaxminddb ");
+    *yield = string_copy(ASN_LOOKUP_FAILED);
+
+    goto end_asn;
+  }
+
+  MMDB_entry_data_s entry_data;	
+  int exit_code = 0;
+  if (result.found_entry) {
+    int status =
+      MMDB_get_value(&result.entry, &entry_data, "autonomous_system_organization", NULL, NULL);
+	  
+    if (MMDB_SUCCESS != status) {
+      log_write(0, LOG_MAIN, US"geoipv6: Error looking up the entry data ");
+      *yield = string_copy(ASN_LOOKUP_FAILED);
+
+      goto end_asn;
+    }
+	  
+    if (NULL != &entry_data) {
+      if (MMDB_DATA_TYPE_UTF8_STRING == entry_data.type) {
+	*yield = string_copyn((uschar *) entry_data.utf8_string, entry_data.data_size);
+      } else {
+	log_write(0, LOG_MAIN, US"geoipv6: Error unexpected data type ");
+	*yield = string_copy(ASN_LOOKUP_FAILED);
+      }
+
+      goto end_asn;
+    }
+	  
+  } else {
+    log_write(0, LOG_MAIN, US"geoipv6: No data for the IP address ");
+    *yield = string_copy(ASN_LOOKUP_FAILED);
+
+    goto end_asn;
+  }
+    
+ end_asn:
+  MMDB_close(&mmdb);
+  return OK;
+
+}
+
 
 /*****************************************************************************
  * eof
